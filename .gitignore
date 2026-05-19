@@ -3,3 +3,4 @@ src/
 *.pkg.tar.zst
 *.deb
 *.tar.xz
+preload.js

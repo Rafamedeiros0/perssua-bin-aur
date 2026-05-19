@@ -1,0 +1,125 @@
+name: Update AUR package
+
+on:
+  schedule:
+    # Daily at 09:00 UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      force_version:
+        description: 'Force a specific version (leave empty to auto-detect)'
+        required: false
+        default: ''
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect latest upstream version
+        id: detect
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${{ github.event.inputs.force_version }}" ]]; then
+            LATEST="${{ github.event.inputs.force_version }}"
+            echo "Forced version: $LATEST"
+          else
+            LATEST=$(curl -fsSL -A "Mozilla/5.0" https://perssua.com/en/downloads \
+              | grep -oE 'Perssua-[0-9]+\.[0-9]+\.[0-9]+-amd64\.deb' \
+              | sed -E 's/Perssua-(.+)-amd64\.deb/\1/' \
+              | sort -uV \
+              | tail -1)
+            echo "Detected latest: $LATEST"
+          fi
+
+          if [[ -z "$LATEST" ]]; then
+            echo "ERROR: could not detect upstream version" >&2
+            exit 1
+          fi
+
+          CURRENT=$(grep -E '^pkgver=' PKGBUILD | cut -d= -f2)
+          echo "Current pkgver: $CURRENT"
+
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          if [[ "$LATEST" == "$CURRENT" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download .deb and compute sha256
+        if: steps.detect.outputs.changed == 'true'
+        id: sha
+        run: |
+          set -euo pipefail
+          VER="${{ steps.detect.outputs.latest }}"
+          URL="https://downloads.perssua.com/Perssua-${VER}-amd64.deb"
+          echo "Downloading $URL"
+          curl -fsSL -o pkg.deb "$URL"
+          SHA=$(sha256sum pkg.deb | cut -d' ' -f1)
+          echo "sha256: $SHA"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          rm -f pkg.deb
+
+      - name: Update PKGBUILD
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          VER="${{ steps.detect.outputs.latest }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+
+          # Update pkgver and reset pkgrel to 1
+          sed -i -E "s/^pkgver=.*/pkgver=${VER}/" PKGBUILD
+          sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+          # Replace the first sha256sums entry (the .deb sha; second is SKIP for the conf)
+          sed -i -E "0,/^sha256sums=\('[a-f0-9]{64}'/ s//sha256sums=('${SHA}'/" PKGBUILD
+
+          echo "--- Updated PKGBUILD ---"
+          cat PKGBUILD
+
+      - name: Publish to AUR
+        if: steps.detect.outputs.changed == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: perssua-bin
+          pkgbuild: ./PKGBUILD
+          assets: |
+            hyprland-perssua.conf
+            perssua-bin.install
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
+          commit_message: "upgpkg: perssua-bin ${{ steps.detect.outputs.latest }}-1"
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+          updpkgsums: false
+          test: false
+
+      - name: Commit back to GitHub
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          VER="${{ steps.detect.outputs.latest }}"
+
+          # Pull the .SRCINFO that the AUR action generated
+          # (the action writes it next to PKGBUILD inside its container, but the
+          #  runner's workspace is what we commit back to GitHub)
+          if [[ ! -f .SRCINFO ]] || ! grep -q "pkgver = ${VER}" .SRCINFO; then
+            # Regenerate locally as fallback using a tiny Arch container
+            docker run --rm -v "$PWD:/work" -w /work archlinux:base-devel bash -c '
+              useradd -m builder &&
+              chown -R builder:builder /work &&
+              su builder -c "makepkg --printsrcinfo > .SRCINFO"
+            '
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "upgpkg: perssua-bin ${VER}-1"
+          git push
