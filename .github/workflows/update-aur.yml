@@ -89,7 +89,7 @@ jobs:
 
       - name: Publish to AUR
         if: steps.detect.outputs.changed == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@v4
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: perssua-bin
           pkgbuild: ./PKGBUILD
