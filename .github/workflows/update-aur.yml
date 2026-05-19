@@ -1,6 +1,10 @@
 name: Update AUR package
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/update-aur.yml'
   schedule:
     # Daily at 09:00 UTC
     - cron: '0 9 * * *'
