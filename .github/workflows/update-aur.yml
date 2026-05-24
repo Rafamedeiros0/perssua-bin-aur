@@ -135,4 +135,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add PKGBUILD .SRCINFO
           git commit -m "upgpkg: perssua-bin ${VER}-1"
+
+          # Safety: someone may have pushed to master between checkout and now.
+          # Rebase onto remote tip so we fast-forward cleanly.
+          git pull --rebase origin master
           git push
