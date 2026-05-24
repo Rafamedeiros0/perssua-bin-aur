@@ -117,12 +117,18 @@ jobs:
           # (the action writes it next to PKGBUILD inside its container, but the
           #  runner's workspace is what we commit back to GitHub)
           if [[ ! -f .SRCINFO ]] || ! grep -q "pkgver = ${VER}" .SRCINFO; then
-            # Regenerate locally as fallback using a tiny Arch container
-            docker run --rm -v "$PWD:/work" -w /work archlinux:base-devel bash -c '
+            # Regenerate .SRCINFO using a tiny Arch container.
+            # makepkg refuses to run as root, so we create a builder user inside
+            # the container; then we restore workspace ownership to the runner
+            # uid before exit so subsequent git commands can write .git/config.
+            RUNNER_UID="$(id -u)"
+            RUNNER_GID="$(id -g)"
+            docker run --rm -v "$PWD:/work" -w /work archlinux:base-devel bash -c "
               useradd -m builder &&
               chown -R builder:builder /work &&
-              su builder -c "makepkg --printsrcinfo > .SRCINFO"
-            '
+              su builder -c 'makepkg --printsrcinfo > .SRCINFO' &&
+              chown -R ${RUNNER_UID}:${RUNNER_GID} /work
+            "
           fi
 
           git config user.name "github-actions[bot]"
